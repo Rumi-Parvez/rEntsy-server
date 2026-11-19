@@ -1,5 +1,6 @@
 import express from "express";
 
+import { loadUser } from "../middleware/loadUser.js";
 import { verifyRole } from "../middleware/verifyRole.js";
 import { verifyToken } from "../middleware/verifyToken.js";
 
@@ -8,11 +9,11 @@ const router = express.Router();
 /*
   Any logged-in user
 */
-router.get("/profile", verifyToken, (req, res) => {
+router.get("/profile", verifyToken, loadUser, (req, res) => {
   res.json({
     success: true,
     message: "You are authenticated",
-    user: req.user,
+    user: req.dbUser,
   });
 });
 
@@ -22,12 +23,13 @@ router.get("/profile", verifyToken, (req, res) => {
 router.get(
   "/customer",
   verifyToken,
+  loadUser,
   verifyRole("customer"),
   (req, res) => {
     res.json({
       success: true,
       message: "Welcome Customer",
-      user: req.user,
+      user: req.dbUser,
     });
   }
 );
@@ -38,12 +40,13 @@ router.get(
 router.get(
   "/owner",
   verifyToken,
+  loadUser,
   verifyRole("owner"),
   (req, res) => {
     res.json({
       success: true,
       message: "Welcome Owner",
-      user: req.user,
+      user: req.dbUser,
     });
   }
 );
@@ -54,12 +57,13 @@ router.get(
 router.get(
   "/admin",
   verifyToken,
+  loadUser,
   verifyRole("admin"),
   (req, res) => {
     res.json({
       success: true,
       message: "Welcome Admin",
-      user: req.user,
+      user: req.dbUser,
     });
   }
 );
@@ -70,12 +74,13 @@ router.get(
 router.get(
   "/owner-admin",
   verifyToken,
+  loadUser,
   verifyRole("owner", "admin"),
   (req, res) => {
     res.json({
       success: true,
       message: "Owner/Admin access granted",
-      user: req.user,
+      user: req.dbUser,
     });
   }
 );

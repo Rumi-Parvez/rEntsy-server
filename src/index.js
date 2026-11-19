@@ -3,6 +3,10 @@ import cors from "cors";
 import express from "express";
 
 import { connectDB } from "./config/db.js";
+import analyticsRoutes from "./routes/analyticsRoutes.js";
+import bookingRoutes from "./routes/bookingRoutes.js";
+import equipmentRoutes from "./routes/equipmentRoutes.js";
+import favoriteRoutes from "./routes/favoriteRoutes.js";
 import protectedRoutes from "./routes/protectedRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 
@@ -14,23 +18,27 @@ const port = process.env.PORT || 5000;
 app.use(
   cors({
     origin: [
+      process.env.CLIENT_URL || "http://localhost:3000",
       "http://localhost:3000",
+      "http://127.0.0.1:3000",
     ],
     credentials: true,
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 // Root route
 app.get("/", (req, res) => {
   res.send("Welcome to the rEntsy Server");
 });
 
-// User routes
+// API routes
 app.use("/api/users", userRoutes);
-
-// Protected routes
+app.use("/api/equipment", equipmentRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/favorites", favoriteRoutes);
+app.use("/api/analytics", analyticsRoutes);
 app.use("/api/protected", protectedRoutes);
 
 // 404 handler
@@ -41,19 +49,24 @@ app.use((req, res) => {
   });
 });
 
+// Error handler
+app.use((error, req, res, next) => {
+  console.error("Unhandled API error:", error);
+
+  res.status(500).json({
+    success: false,
+    message: "Internal server error",
+  });
+});
+
 // Start server
 const startServer = async () => {
   try {
     await connectDB();
 
     app.listen(port, () => {
-      console.log(
-        `The server is running on PORT = ${port}`
-      );
-
-      console.log(
-        `URL = http://localhost:${port}`
-      );
+      console.log(`The server is running on PORT = ${port}`);
+      console.log(`URL = http://localhost:${port}`);
     });
   } catch (error) {
     console.error("Failed to start server:", error);
