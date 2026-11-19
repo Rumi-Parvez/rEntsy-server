@@ -1,9 +1,9 @@
 import { MongoClient } from "mongodb";
 
-const uri = process.env.MONGODB_URI;
+const uri = process.env.MONGODB_CLIENT_URI;
 
 if (!uri) {
-  throw new Error("MONGODB_URI is not defined in .env");
+  throw new Error("MONGODB_CLIENT_URI is not defined in .env");
 }
 
 const client = new MongoClient(uri);
