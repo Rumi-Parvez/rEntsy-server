@@ -9,7 +9,7 @@ import equipmentRoutes from "./routes/equipmentRoutes.js";
 import favoriteRoutes from "./routes/favoriteRoutes.js";
 import protectedRoutes from "./routes/protectedRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
-
+import contactRoutes from "./routes/contactRoutes.js";
 const app = express();
 
 const port = process.env.PORT || 5000;
@@ -40,7 +40,7 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/favorites", favoriteRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/protected", protectedRoutes);
-
+app.use("/api/contacts", contactRoutes);
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
