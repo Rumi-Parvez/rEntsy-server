@@ -41,6 +41,34 @@ const ensureIndexes = async (db) => {
       },
       { unique: true, name: "favorites_user_equipment_unique" }
     ),
+    db.collection("bookings").createIndex(
+      { checkoutId: 1 },
+      {
+        unique: true,
+        name: "bookings_checkout_unique",
+        partialFilterExpression: {
+          checkoutId: { $type: "string" },
+        },
+      }
+    ),
+    db.collection("payments").createIndex({
+      checkoutId: 1,
+    }),
+    db.collection("payments").createIndex({
+      stripeSessionId: 1,
+    }),
+    db.collection("payments").createIndex({
+      customerEmail: 1,
+    }),
+    // Only pending checkouts carry expiresAt, so paid transaction
+    // records are never removed by the TTL monitor.
+    db.collection("payments").createIndex(
+      { expiresAt: 1 },
+      {
+        name: "payments_pending_ttl",
+        expireAfterSeconds: 0,
+      }
+    ),
   ];
 
   // Index creation must never stop the API from booting.

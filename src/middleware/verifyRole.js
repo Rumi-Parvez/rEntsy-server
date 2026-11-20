@@ -1,13 +1,19 @@
+/**
+ * Role guard.
+ *
+ * Roles are never trusted from the client or from JWT claims.
+ * `loadUser` must run before this middleware so the role comes from
+ * the MongoDB user record only.
+ */
 export const verifyRole = (...allowedRoles) => {
   return (req, res, next) => {
-    // Prefer the role loaded from the database (loadUser middleware).
-    // Fall back to a token claim only when no database role is present.
-    const userRole = req.userRole || req.dbUser?.role || req.user?.role;
+    const userRole = req.dbUser?.role;
 
     if (!userRole) {
       return res.status(403).json({
         success: false,
-        message: "User role is missing",
+        message:
+          "Your account role could not be verified. Please sign in again.",
       });
     }
 

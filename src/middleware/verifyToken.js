@@ -8,6 +8,19 @@ if (!jwksUrl) {
 
 const JWKS = createRemoteJWKSet(new URL(jwksUrl));
 
+// Better Auth signs tokens with the app base URL as both issuer and
+// audience. Allow explicit overrides for deployments that use a
+// dedicated auth domain.
+const expectedIssuer =
+  process.env.JWT_ISSUER ||
+  process.env.CLIENT_URL ||
+  "http://localhost:3000";
+
+const expectedAudience =
+  process.env.JWT_AUDIENCE ||
+  process.env.CLIENT_URL ||
+  "http://localhost:3000";
+
 export const verifyToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -35,9 +48,27 @@ export const verifyToken = async (req, res, next) => {
       });
     }
 
-    const { payload } = await jwtVerify(token, JWKS);
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: expectedIssuer,
+      audience: expectedAudience,
+      algorithms: ["EdDSA", "RS256", "ES256"],
+    });
+
+    if (!payload?.sub && !payload?.email) {
+      return res.status(401).json({
+        success: false,
+        message: "Access token is missing an identity claim",
+      });
+    }
 
     req.user = payload;
+    req.auth = {
+      sub: payload.sub,
+      email:
+        typeof payload.email === "string"
+          ? payload.email.toLowerCase()
+          : undefined,
+    };
 
     next();
   } catch (error) {

@@ -2,6 +2,7 @@ import express from "express";
 import { ObjectId } from "mongodb";
 
 import { getDB } from "../config/db.js";
+import { loadUser } from "../middleware/loadUser.js";
 import { verifyRole } from "../middleware/verifyRole.js";
 import { verifyToken } from "../middleware/verifyToken.js";
 
@@ -71,7 +72,12 @@ router.post("/", async (req, res) => {
   GET /api/contacts
   Admin only: View all contact messages
 */
-router.get("/", verifyToken, verifyRole("admin"), async (req, res) => {
+router.get(
+  "/",
+  verifyToken,
+  loadUser,
+  verifyRole("admin"),
+  async (req, res) => {
   try {
     const contacts = await contactsCollection()
       .find({})
@@ -96,7 +102,12 @@ router.get("/", verifyToken, verifyRole("admin"), async (req, res) => {
   PATCH /api/contacts/:id
   Admin only: Mark message as read/resolved
 */
-router.patch("/:id", verifyToken, verifyRole("admin"), async (req, res) => {
+router.patch(
+  "/:id",
+  verifyToken,
+  loadUser,
+  verifyRole("admin"),
+  async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
