@@ -17,6 +17,51 @@ const CATEGORIES = [
   "Events",
 ];
 
+const CATEGORY_META = {
+  "Construction Equipment": {
+    slug: "construction-equipment",
+    description:
+      "Heavy duty excavators, concrete mixers, site lifts, and earthmoving gear.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1503708928676-1cb796a0891e?auto=format&fit=crop&w=900&q=80",
+  },
+  "Photography Equipment": {
+    slug: "photography-equipment",
+    description:
+      "Cameras, lenses, lighting rigs, gimbals, and studio production gear.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=900&q=80",
+  },
+  Vehicles: {
+    slug: "vehicles",
+    description:
+      "Microbuses, cargo vans, utility trucks, and commercial transport vehicles.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?auto=format&fit=crop&w=900&q=80",
+  },
+  Agriculture: {
+    slug: "agriculture",
+    description:
+      "Farm tillers, harvesters, pumps, and agricultural field equipment.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1625246333195-78d9c38ad449?auto=format&fit=crop&w=900&q=80",
+  },
+  Electronics: {
+    slug: "electronics",
+    description:
+      "Generators, displays, power stations, diagnostic tools, and electronics.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80",
+  },
+  Events: {
+    slug: "events",
+    description:
+      "Audio systems, staging, lighting trusses, and event rental equipment.",
+    imageUrl:
+      "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=900&q=80",
+  },
+};
+
 const CONDITIONS = [
   "Excellent",
   "Good",
@@ -36,6 +81,12 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const toSlug = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+
 const isOwnerOrAdmin = (equipment, user) =>
   user.role === "admin" ||
   equipment.ownerEmail === user.email;
@@ -52,6 +103,86 @@ router.get("/meta", (req, res) => {
     rentalTypes: RENTAL_TYPES,
     statuses: STATUSES,
   });
+});
+
+// --------------------------------------------------
+// GET /api/equipment/categories
+// Public category list with approved equipment counts
+// MUST come before GET /:id
+// --------------------------------------------------
+
+router.get("/categories", async (req, res) => {
+  try {
+    const db = getDB();
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+
+    const grouped = await db
+      .collection("equipment")
+      .aggregate([
+        { $match: { status: "approved" } },
+        {
+          $group: {
+            _id: "$category",
+            equipmentCount: { $sum: 1 },
+            imageUrl: { $first: "$imageUrl" },
+          },
+        },
+      ])
+      .toArray();
+
+    const statsMap = new Map();
+    grouped.forEach((entry) => {
+      if (entry._id) {
+        statsMap.set(String(entry._id).toLowerCase(), {
+          count: toNumber(entry.equipmentCount, 0),
+          imageUrl:
+            typeof entry.imageUrl === "string" ? entry.imageUrl.trim() : "",
+        });
+      }
+    });
+
+    const categories = CATEGORIES.map((name) => {
+      const stats = statsMap.get(name.toLowerCase()) || {
+        count: 0,
+        imageUrl: "",
+      };
+      const meta = CATEGORY_META[name] || {
+        slug: toSlug(name),
+        description: `Verified ${name} available for rent on rEntsy.`,
+        imageUrl:
+          "https://images.unsplash.com/photo-1503708928676-1cb796a0891e?auto=format&fit=crop&w=900&q=80",
+      };
+
+      return {
+        name,
+        slug: meta.slug || toSlug(name),
+        description: meta.description,
+        imageUrl: stats.imageUrl || meta.imageUrl,
+        equipmentCount: stats.count,
+      };
+    });
+
+    const filtered = q
+      ? categories.filter(
+          (item) =>
+            item.name.toLowerCase().includes(q.toLowerCase()) ||
+            item.description.toLowerCase().includes(q.toLowerCase())
+        )
+      : categories;
+
+    return res.status(200).json({
+      success: true,
+      count: filtered.length,
+      categories: filtered,
+    });
+  } catch (error) {
+    console.error("Get categories error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load equipment categories.",
+    });
+  }
 });
 
 // --------------------------------------------------
