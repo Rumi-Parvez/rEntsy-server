@@ -20,6 +20,41 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 const ACTIVE_BOOKING_STATUSES = ["pending", "confirmed", "ongoing"];
 
+const validateStripeSessionForPayment = (session, payment) => {
+  if (session.payment_status !== "paid") {
+    return "Payment has not been completed.";
+  }
+
+  if (session.metadata?.checkoutId !== payment.checkoutId) {
+    return "Stripe session does not belong to this checkout.";
+  }
+
+  const expectedAmount = Math.round(Number(payment.totalAmount) * 100);
+  const sessionAmount = Number(session.amount_total);
+  const expectedCurrency = String(payment.currency || CURRENCY).toLowerCase();
+  const sessionCurrency = String(session.currency || "").toLowerCase();
+
+  if (
+    !Number.isInteger(expectedAmount) ||
+    expectedAmount <= 0 ||
+    sessionAmount !== expectedAmount ||
+    sessionCurrency !== expectedCurrency
+  ) {
+    return "Stripe payment amount or currency does not match the checkout.";
+  }
+
+  if (
+    payment.customerEmail &&
+    session.customer_email &&
+    String(session.customer_email).toLowerCase() !==
+      String(payment.customerEmail).toLowerCase()
+  ) {
+    return "Stripe session belongs to a different customer.";
+  }
+
+  return "";
+};
+
 const parseDate = (value) => {
   const date = new Date(value);
 
@@ -120,6 +155,20 @@ const buildCheckoutDraft = async (db, user, body) => {
   const duration =
     Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
 
+  // Billable units follow the equipment rental type, matching the
+  // amount shown on the client checkout page:
+  // hourly = 8-hour days, weekly/monthly round up.
+  const rentalType = String(equipment.rentalType || "daily").toLowerCase();
+
+  const billingUnits =
+    rentalType === "hourly"
+      ? duration * 8
+      : rentalType === "weekly"
+        ? Math.max(1, Math.ceil(duration / 7))
+        : rentalType === "monthly"
+          ? Math.max(1, Math.ceil(duration / 30))
+          : duration;
+
   const requiredQuantity = Math.max(
     Math.floor(toNumber(body.requiredQuantity, 1)),
     1
@@ -169,7 +218,7 @@ const buildCheckoutDraft = async (db, user, body) => {
   }
 
   const pricePerUnit = Number(equipment.rentalPrice) || 0;
-  const totalAmount = pricePerUnit * duration * requiredQuantity;
+  const totalAmount = pricePerUnit * billingUnits * requiredQuantity;
 
   if (totalAmount <= 0) {
     return {
@@ -194,6 +243,8 @@ const buildCheckoutDraft = async (db, user, body) => {
       rentalStartDate: startIso,
       rentalEndDate: endIso,
       duration,
+      billingUnits,
+      rentalType,
       requiredQuantity,
       pricePerUnit,
       totalAmount,
@@ -308,6 +359,8 @@ const finalizePayment = async (db, payment, transaction = {}) => {
     rentalStartDate: payment.rentalStartDate,
     rentalEndDate: payment.rentalEndDate,
     duration: payment.duration,
+    billingUnits: payment.billingUnits || payment.duration,
+    rentalType: payment.rentalType || "daily",
     requiredQuantity: payment.requiredQuantity,
     pricePerUnit: payment.pricePerUnit,
     totalAmount: payment.totalAmount,
@@ -374,33 +427,36 @@ const finalizePayment = async (db, payment, transaction = {}) => {
 
 export const stripeWebhook = async (req, res) => {
   if (!stripe) {
-    return res.status(200).json({ received: true, mode: "demo" });
+    return res.status(503).json({
+      success: false,
+      message: "Stripe is not configured on the server.",
+    });
   }
 
   let event;
 
   try {
-    if (STRIPE_WEBHOOK_SECRET) {
-      const signature = req.headers["stripe-signature"];
-
-      if (!signature) {
-        return res.status(400).json({
-          success: false,
-          message: "Missing Stripe signature.",
-        });
-      }
-
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        signature,
-        STRIPE_WEBHOOK_SECRET
-      );
-    } else {
-      event =
-        typeof req.body === "string"
-          ? JSON.parse(req.body)
-          : JSON.parse(req.body.toString("utf8"));
+    if (!STRIPE_WEBHOOK_SECRET) {
+      return res.status(503).json({
+        success: false,
+        message: "Stripe webhook verification is not configured.",
+      });
     }
+
+    const signature = req.headers["stripe-signature"];
+
+    if (!signature) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing Stripe signature.",
+      });
+    }
+
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      signature,
+      STRIPE_WEBHOOK_SECRET
+    );
   } catch (error) {
     console.error("Stripe webhook signature error:", error.message);
 
@@ -426,6 +482,26 @@ export const stripeWebhook = async (req, res) => {
       });
 
       if (payment && payment.status !== "paid") {
+        if (
+          session.metadata?.checkoutId !== payment.checkoutId ||
+          session.amount_total !==
+            Math.round(Number(payment.totalAmount) * 100) ||
+          String(session.currency || "").toLowerCase() !==
+            String(payment.currency || CURRENCY).toLowerCase()
+        ) {
+          console.error(
+            "Rejected Stripe webhook: session data did not match the stored checkout.",
+            {
+              checkoutId: payment.checkoutId,
+              stripeSessionId: session.id,
+            }
+          );
+          return res.status(400).json({
+            success: false,
+            message: "Stripe session does not match the stored checkout.",
+          });
+        }
+
         await finalizePayment(db, payment, {
           transactionId:
             typeof session.payment_intent === "string"
@@ -492,20 +568,10 @@ router.post(
       };
 
       if (!stripe) {
-        const insert = await db.collection("payments").insertOne(draft);
-
-        return res.status(201).json({
-          success: true,
-          mode: "demo",
+        return res.status(503).json({
+          success: false,
           message:
-            "Demo checkout ready. Stripe is not configured, so the payment will be simulated.",
-          checkoutId: draft.checkoutId,
-          paymentId: insert.insertedId,
-          redirectUrl: `/payment/success?checkout=${encodeURIComponent(
-            draft.checkoutId
-          )}`,
-          totalAmount: draft.totalAmount,
-          currency: draft.currency,
+            "Online payment is unavailable. Please try again later.",
         });
       }
 
@@ -517,6 +583,10 @@ router.post(
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
         customer_email: draft.customerEmail,
+        // Managed Payments requires a product tax code on every line
+        // item. rEntsy does not use that feature, so disable it for
+        // this Checkout session.
+        managed_payments: { enabled: false },
         line_items: [
           {
             quantity: 1,
@@ -536,7 +606,9 @@ router.post(
           customerEmail: draft.customerEmail,
         },
         success_url: `${CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${CLIENT_URL}/equipment/${draft.equipmentId}?payment=cancelled`,
+        cancel_url: `${CLIENT_URL}/payment/cancel?checkout=${encodeURIComponent(
+          draft.checkoutId
+        )}&equipmentId=${encodeURIComponent(draft.equipmentId)}`,
       });
 
       draft.stripeSessionId = session.id;
@@ -567,8 +639,7 @@ router.post(
 
 // --------------------------------------------------
 // POST /api/payments/verify
-// Confirms a Stripe session (or demo checkout) and creates the
-// booking + transaction records.
+// Confirms a verified Stripe session and creates the booking + transaction records.
 // --------------------------------------------------
 
 router.post(
@@ -642,26 +713,34 @@ router.post(
 
       let transaction = {};
 
-      if (payment.provider === "stripe") {
-        if (!stripe) {
-          return res.status(503).json({
-            success: false,
-            message: "Stripe is not configured on the server.",
-          });
-        }
+      if (payment.provider !== "stripe") {
+        return res.status(409).json({
+          success: false,
+          message: "This checkout is not eligible for server-side verification.",
+        });
+      }
 
-        const reference = sessionId || payment.stripeSessionId;
+      if (!stripe) {
+        return res.status(503).json({
+          success: false,
+          message: "Stripe is not configured on the server.",
+        });
+      }
 
-        if (!reference) {
-          return res.status(400).json({
-            success: false,
-            message: "Stripe session reference is missing.",
-          });
-        }
+      const reference = sessionId || payment.stripeSessionId;
 
-        const session = await stripe.checkout.sessions.retrieve(reference);
+      if (!reference) {
+        return res.status(400).json({
+          success: false,
+          message: "Stripe session reference is missing.",
+        });
+      }
 
-        if (session.payment_status !== "paid") {
+      const session = await stripe.checkout.sessions.retrieve(String(reference));
+      const validationError = validateStripeSessionForPayment(session, payment);
+
+      if (validationError) {
+        if (validationError === "Payment has not been completed.") {
           return res.status(402).json({
             success: false,
             message:
@@ -669,19 +748,24 @@ router.post(
           });
         }
 
-        transaction = {
-          transactionId:
-            typeof session.payment_intent === "string"
-              ? session.payment_intent
-              : session.id,
-          paymentIntentId:
-            typeof session.payment_intent === "string"
-              ? session.payment_intent
-              : "",
-          amount: session.amount_total ? session.amount_total / 100 : undefined,
-          currency: session.currency,
-        };
+        return res.status(400).json({
+          success: false,
+          message: validationError,
+        });
       }
+
+      transaction = {
+        transactionId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.id,
+        paymentIntentId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : "",
+        amount: session.amount_total ? session.amount_total / 100 : undefined,
+        currency: session.currency,
+      };
 
       const finalized = await finalizePayment(db, payment, transaction);
 
@@ -704,6 +788,84 @@ router.post(
           error.statusCode === 409
             ? error.message
             : "Failed to verify the payment.",
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// POST /api/payments/cancel
+// Marks an unpaid checkout as cancelled when the shopper returns from
+// Stripe without paying. No charge is made.
+// --------------------------------------------------
+
+router.post(
+  "/cancel",
+  verifyToken,
+  loadUser,
+  async (req, res) => {
+    try {
+      const checkoutId = String(
+        (req.body || {}).checkoutId || ""
+      );
+
+      if (!checkoutId) {
+        return res.status(400).json({
+          success: false,
+          message: "A checkout reference is required.",
+        });
+      }
+
+      const db = getDB();
+      const payment = await db.collection("payments").findOne({
+        checkoutId,
+      });
+
+      if (!payment) {
+        return res.status(404).json({
+          success: false,
+          message: "Checkout session not found.",
+        });
+      }
+
+      if (
+        payment.customerEmail !== req.dbUser.email &&
+        req.userRole !== "admin"
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "You cannot cancel this checkout.",
+        });
+      }
+
+      if (payment.status === "paid") {
+        return res.status(409).json({
+          success: false,
+          message: "This payment is already complete.",
+        });
+      }
+
+      await db.collection("payments").updateOne(
+        { _id: payment._id },
+        {
+          $set: {
+            status: "cancelled",
+            updatedAt: new Date(),
+          },
+          $unset: { expiresAt: "" },
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "Checkout cancelled.",
+      });
+    } catch (error) {
+      console.error("Cancel payment error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to cancel the checkout.",
       });
     }
   }

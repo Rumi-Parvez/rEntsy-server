@@ -23,7 +23,10 @@ const expectedAudience =
 
 export const verifyToken = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
+    const authHeader =
+      typeof req.headers.authorization === "string"
+        ? req.headers.authorization.trim()
+        : "";
 
     if (!authHeader) {
       return res.status(401).json({
@@ -32,14 +35,14 @@ export const verifyToken = async (req, res, next) => {
       });
     }
 
-    if (!authHeader.startsWith("Bearer ")) {
+    if (!/^Bearer\s+\S+$/.test(authHeader)) {
       return res.status(401).json({
         success: false,
         message: "Invalid authorization format",
       });
     }
 
-    const token = authHeader.split(" ")[1];
+    const token = authHeader.slice(7).trim();
 
     if (!token) {
       return res.status(401).json({
@@ -52,6 +55,8 @@ export const verifyToken = async (req, res, next) => {
       issuer: expectedIssuer,
       audience: expectedAudience,
       algorithms: ["EdDSA", "RS256", "ES256"],
+      clockTolerance: 30,
+      maxTokenAge: "15m",
     });
 
     if (!payload?.sub && !payload?.email) {

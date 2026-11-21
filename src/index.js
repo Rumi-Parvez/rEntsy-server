@@ -17,6 +17,7 @@ import paymentRoutes, { stripeWebhook } from "./routes/paymentRoutes.js";
 const app = express();
 
 const port = process.env.PORT || 5000;
+const nodeEnvironment = (process.env.NODE_ENV || "development").toLowerCase();
 
 /*
 |--------------------------------------------------------------------------
@@ -32,10 +33,36 @@ const allowedOrigins = [
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false);
+    },
     credentials: true,
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    maxAge: 600,
   })
 );
+
+app.disable("x-powered-by");
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+
+  if (nodeEnvironment === "production") {
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains"
+    );
+  }
+
+  next();
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -164,6 +191,14 @@ app.use((error, req, res, next) => {
 
 const startServer = async () => {
   try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      throw new Error("STRIPE_SECRET_KEY is not defined in .env");
+    }
+
+    if (!process.env.STRIPE_WEBHOOK_SECRET) {
+      throw new Error("STRIPE_WEBHOOK_SECRET is not defined in .env");
+    }
+
     await connectDB();
 
     app.listen(port, () => {

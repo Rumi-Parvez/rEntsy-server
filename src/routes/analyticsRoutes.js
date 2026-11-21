@@ -104,6 +104,8 @@ router.get(
         bookings,
         recentUsers,
         pendingEquipment,
+        totalPayments,
+        paymentTotals,
       ] = await Promise.all([
         db.collection("users").countDocuments(),
         db.collection("equipment").countDocuments(),
@@ -137,6 +139,21 @@ router.get(
           .find({ status: "pending" })
           .sort({ createdAt: -1 })
           .limit(5)
+          .toArray(),
+        db
+          .collection("payments")
+          .countDocuments({ status: "paid" }),
+        db
+          .collection("payments")
+          .aggregate([
+            { $match: { status: "paid" } },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: "$totalAmount" },
+              },
+            },
+          ])
           .toArray(),
       ]);
 
@@ -181,7 +198,9 @@ router.get(
           totalBookings,
           pendingApprovals,
           completedRentals,
-          totalRevenue: sumPaid(bookings),
+          totalPayments,
+          totalRevenue:
+            Number(paymentTotals[0]?.total) || sumPaid(bookings),
           customers: roleCounts.customer || 0,
           owners: roleCounts.owner || 0,
           admins: roleCounts.admin || 0,
@@ -226,6 +245,10 @@ router.get(
         ? {}
         : { ownerEmail: req.dbUser.email };
 
+      const paymentFilter = isAdmin
+        ? { status: "paid" }
+        : { status: "paid", ownerEmail: req.dbUser.email };
+
       const [
         totalEquipment,
         pendingApprovals,
@@ -233,6 +256,8 @@ router.get(
         activeRentals,
         bookings,
         equipmentList,
+        totalPayments,
+        paymentTotals,
       ] = await Promise.all([
         db
           .collection("equipment")
@@ -262,6 +287,19 @@ router.get(
           .find(equipmentFilter)
           .sort({ createdAt: -1 })
           .limit(200)
+          .toArray(),
+        db.collection("payments").countDocuments(paymentFilter),
+        db
+          .collection("payments")
+          .aggregate([
+            { $match: paymentFilter },
+            {
+              $group: {
+                _id: null,
+                total: { $sum: "$totalAmount" },
+              },
+            },
+          ])
           .toArray(),
       ]);
 
@@ -323,7 +361,9 @@ router.get(
           pendingApprovals,
           completedRentals,
           activeRentals,
-          totalEarnings: sumPaid(bookings),
+          totalPayments,
+          totalEarnings:
+            Number(paymentTotals[0]?.total) || sumPaid(bookings),
           monthlyEarnings,
           recentBookings: latest(bookings),
           topEquipment,

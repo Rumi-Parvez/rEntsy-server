@@ -132,6 +132,19 @@ router.post(
             (1000 * 60 * 60 * 24)
         ) + 1;
 
+      const rentalType = String(
+        equipment.rentalType || "daily"
+      ).toLowerCase();
+
+      const billingUnits =
+        rentalType === "hourly"
+          ? duration * 8
+          : rentalType === "weekly"
+            ? Math.max(1, Math.ceil(duration / 7))
+            : rentalType === "monthly"
+              ? Math.max(1, Math.ceil(duration / 30))
+              : duration;
+
       const requiredQuantity = Math.max(
         toNumber(body.requiredQuantity, 1),
         1
@@ -163,7 +176,7 @@ router.post(
       const now = new Date();
 
       const totalAmount =
-        duration *
+        billingUnits *
         requiredQuantity *
         equipment.rentalPrice;
 
@@ -182,6 +195,8 @@ router.post(
         rentalStartDate: start.toISOString(),
         rentalEndDate: end.toISOString(),
         duration,
+        billingUnits,
+        rentalType,
         requiredQuantity,
         pricePerUnit: equipment.rentalPrice,
         totalAmount,
