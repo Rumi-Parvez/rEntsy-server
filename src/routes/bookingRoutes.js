@@ -494,6 +494,14 @@ router.patch(
                 "You can only cancel a pending or confirmed booking.",
             });
           }
+
+          if (booking.paymentStatus === "paid") {
+            return res.status(403).json({
+              success: false,
+              message:
+                "Paid rentals cannot be cancelled. Please contact support.",
+            });
+          }
         }
 
         if (isOwner && !isAdmin && !isCustomer) {

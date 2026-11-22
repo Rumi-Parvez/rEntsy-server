@@ -91,6 +91,15 @@ const RENTAL_TYPES = [
   "monthly",
 ];
 
+const CATEGORY_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+];
+
+const DEFAULT_CATEGORY_IMAGE =
+  "https://images.unsplash.com/photo-1503708928676-1cb796a0891e?auto=format&fit=crop&w=900&q=80";
+
 // --------------------------------------------------
 // Helpers
 // --------------------------------------------------
@@ -129,6 +138,161 @@ const isOwnerOrAdmin = (equipment, user) => {
   );
 };
 
+// --------------------------------------------------
+// Category helpers
+// --------------------------------------------------
+
+const getCategoryStats = async (db) => {
+  const grouped = await db
+    .collection("equipment")
+    .aggregate([
+      {
+        $match: {
+          status: "approved",
+        },
+      },
+      {
+        $group: {
+          _id: "$category",
+          equipmentCount: {
+            $sum: 1,
+          },
+          imageUrl: {
+            $first: "$imageUrl",
+          },
+        },
+      },
+    ])
+    .toArray();
+
+  const statsMap = new Map();
+
+  grouped.forEach((entry) => {
+    if (!entry._id) return;
+
+    statsMap.set(String(entry._id).toLowerCase(), {
+      count: toNumber(entry.equipmentCount, 0),
+
+      imageUrl:
+        typeof entry.imageUrl === "string"
+          ? entry.imageUrl.trim()
+          : "",
+    });
+  });
+
+  return statsMap;
+};
+
+const serializeCategory = (doc, statsMap) => {
+  const name = String(doc.name || "").trim();
+  const stats = statsMap.get(name.toLowerCase()) || {
+    count: 0,
+    imageUrl: "",
+  };
+
+  const meta = CATEGORY_META[name] || {};
+
+  return {
+    _id: doc._id ? String(doc._id) : null,
+    name,
+    slug: doc.slug || toSlug(name),
+    description:
+      doc.description ||
+      meta.description ||
+      `Verified ${name} available for rent on rEntsy.`,
+    imageUrl:
+      stats.imageUrl ||
+      doc.imageUrl ||
+      meta.imageUrl ||
+      DEFAULT_CATEGORY_IMAGE,
+    equipmentCount: stats.count,
+    status: doc.status || "approved",
+    isBuiltIn: Boolean(doc.isBuiltIn),
+    createdAt: doc.createdAt || null,
+  };
+};
+
+/**
+ * Returns the built-in categories followed by approved custom categories.
+ * Pass `includeUnapproved` for owner/admin management screens.
+ */
+const getCategoryRecords = async (
+  db,
+  { includeUnapproved = false } = {}
+) => {
+  const statsMap = await getCategoryStats(db);
+
+  const builtIn = CATEGORIES.map((name) => ({
+    _id: null,
+    name,
+    slug: CATEGORY_META[name]?.slug || toSlug(name),
+    description: CATEGORY_META[name]?.description || "",
+    imageUrl: CATEGORY_META[name]?.imageUrl || DEFAULT_CATEGORY_IMAGE,
+    status: "approved",
+    isBuiltIn: true,
+    createdAt: null,
+  }));
+
+  const customDocs = await db
+    .collection("categories")
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  const seen = new Set(
+    CATEGORIES.map((name) => name.toLowerCase())
+  );
+
+  const custom = [];
+
+  customDocs.forEach((doc) => {
+    const name =
+      typeof doc.name === "string" ? doc.name.trim() : "";
+
+    if (!name) return;
+
+    const key = name.toLowerCase();
+
+    if (seen.has(key)) return;
+
+    seen.add(key);
+
+    if (!includeUnapproved && doc.status !== "approved") {
+      return;
+    }
+
+    custom.push({
+      _id: doc._id,
+      name,
+      slug: doc.slug || toSlug(name),
+      description: doc.description || "",
+      imageUrl: doc.imageUrl || "",
+      status: doc.status || "pending",
+      isBuiltIn: false,
+      createdAt: doc.createdAt || null,
+    });
+  });
+
+  return [...builtIn, ...custom].map((doc) =>
+    serializeCategory(doc, statsMap)
+  );
+};
+
+const getApprovedCategoryNames = async (db) => {
+  const records = await getCategoryRecords(db);
+
+  return records.map((record) => record.name);
+};
+
+const isApprovedCategory = (categoryNames, value) => {
+  const target = String(value || "").trim().toLowerCase();
+
+  return categoryNames.some(
+    (name) => name.toLowerCase() === target
+  );
+};
+
+
 // ==================================================
 // PUBLIC GET ROUTES
 // ==================================================
@@ -140,9 +304,13 @@ const isOwnerOrAdmin = (equipment, user) => {
 
 router.get("/meta", async (req, res) => {
   try {
+    const db = getDB();
+
+    const categories = await getApprovedCategoryNames(db);
+
     return res.status(200).json({
       success: true,
-      categories: CATEGORIES,
+      categories,
       conditions: CONDITIONS,
       rentalTypes: RENTAL_TYPES,
       statuses: STATUSES,
@@ -159,7 +327,7 @@ router.get("/meta", async (req, res) => {
 
 // --------------------------------------------------
 // GET /api/equipment/categories
-// Public
+// Public: approved categories only
 // --------------------------------------------------
 
 router.get("/categories", async (req, res) => {
@@ -171,76 +339,7 @@ router.get("/categories", async (req, res) => {
         ? req.query.q.trim()
         : "";
 
-    const grouped = await db
-      .collection("equipment")
-      .aggregate([
-        {
-          $match: {
-            status: "approved",
-          },
-        },
-        {
-          $group: {
-            _id: "$category",
-            equipmentCount: {
-              $sum: 1,
-            },
-            imageUrl: {
-              $first: "$imageUrl",
-            },
-          },
-        },
-      ])
-      .toArray();
-
-    const statsMap = new Map();
-
-    grouped.forEach((entry) => {
-      if (entry._id) {
-        statsMap.set(
-          String(entry._id).toLowerCase(),
-          {
-            count: toNumber(
-              entry.equipmentCount,
-              0
-            ),
-
-            imageUrl:
-              typeof entry.imageUrl === "string"
-                ? entry.imageUrl.trim()
-                : "",
-          }
-        );
-      }
-    });
-
-    const categories = CATEGORIES.map((name) => {
-      const stats =
-        statsMap.get(name.toLowerCase()) || {
-          count: 0,
-          imageUrl: "",
-        };
-
-      const meta =
-        CATEGORY_META[name] || {
-          slug: toSlug(name),
-
-          description:
-            `Verified ${name} available for rent on rEntsy.`,
-
-          imageUrl:
-            "https://images.unsplash.com/photo-1503708928676-1cb796a0891e?auto=format&fit=crop&w=900&q=80",
-        };
-
-      return {
-        name,
-        slug: meta.slug || toSlug(name),
-        description: meta.description,
-        imageUrl:
-          stats.imageUrl || meta.imageUrl,
-        equipmentCount: stats.count,
-      };
-    });
+    const categories = await getCategoryRecords(db);
 
     const filtered = q
       ? categories.filter(
@@ -272,6 +371,386 @@ router.get("/categories", async (req, res) => {
     });
   }
 });
+
+// --------------------------------------------------
+// GET /api/equipment/categories/manage
+// Owner + Admin: includes pending / rejected categories
+// --------------------------------------------------
+
+router.get(
+  "/categories/manage",
+  verifyToken,
+  loadUser,
+  verifyRole("owner", "admin"),
+  async (req, res) => {
+    try {
+      const db = getDB();
+
+      const categories = await getCategoryRecords(db, {
+        includeUnapproved: true,
+      });
+
+      return res.status(200).json({
+        success: true,
+        count: categories.length,
+        categories,
+      });
+    } catch (error) {
+      console.error(
+        "Manage categories error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load categories.",
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// POST /api/equipment/categories
+// Owner + Admin: create a new category
+// Owner categories start as "pending".
+// --------------------------------------------------
+
+router.post(
+  "/categories",
+  verifyToken,
+  loadUser,
+  verifyRole("owner", "admin"),
+  async (req, res) => {
+    try {
+      const db = getDB();
+
+      const body = req.body || {};
+
+      const name =
+        typeof body.name === "string"
+          ? body.name.trim()
+          : "";
+
+      if (name.length < 2 || name.length > 60) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Category name must be between 2 and 60 characters.",
+        });
+      }
+
+      const slug = toSlug(name);
+
+      if (!slug) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Category name must contain letters or numbers.",
+        });
+      }
+
+      const builtInExists = CATEGORIES.some(
+        (category) =>
+          category.toLowerCase() === name.toLowerCase()
+      );
+
+      if (builtInExists) {
+        return res.status(409).json({
+          success: false,
+          message: "That category already exists.",
+        });
+      }
+
+      const existing = await db
+        .collection("categories")
+        .findOne({
+          $or: [
+            { slug },
+            {
+              name: {
+                $regex: `^${escapeRegex(name)}$`,
+                $options: "i",
+              },
+            },
+          ],
+        });
+
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          message: "That category already exists.",
+        });
+      }
+
+      const now = new Date();
+
+      const category = {
+        name,
+        slug,
+        description:
+          typeof body.description === "string"
+            ? body.description.trim()
+            : "",
+        imageUrl:
+          typeof body.imageUrl === "string"
+            ? body.imageUrl.trim()
+            : "",
+        status:
+          req.userRole === "admin"
+            ? "approved"
+            : "pending",
+        createdBy: {
+          id: req.dbUser._id.toString(),
+          name: req.dbUser.name || "",
+          email: req.dbUser.email || "",
+          role: req.dbUser.role || req.userRole,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const result = await db
+        .collection("categories")
+        .insertOne(category);
+
+      const statsMap = await getCategoryStats(db);
+
+      return res.status(201).json({
+        success: true,
+        message:
+          category.status === "approved"
+            ? "Category created and approved."
+            : "Category submitted for admin approval.",
+        category: serializeCategory(
+          {
+            ...category,
+            _id: result.insertedId,
+          },
+          statsMap
+        ),
+      });
+    } catch (error) {
+      console.error(
+        "Create category error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to create category.",
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// PATCH /api/equipment/categories/:id
+// Admin: approve, reject, or edit a category
+// --------------------------------------------------
+
+router.patch(
+  "/categories/:id",
+  verifyToken,
+  loadUser,
+  verifyRole("admin"),
+  async (req, res) => {
+    try {
+      const db = getDB();
+
+      if (!ObjectId.isValid(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid category ID.",
+        });
+      }
+
+      const category = await db
+        .collection("categories")
+        .findOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+      if (!category) {
+        return res.status(404).json({
+          success: false,
+          message: "Category not found.",
+        });
+      }
+
+      const body = req.body || {};
+      const update = { updatedAt: new Date() };
+
+      if (body.status !== undefined) {
+        if (!CATEGORY_STATUSES.includes(body.status)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid category status.",
+          });
+        }
+
+        update.status = body.status;
+      }
+
+      if (body.name !== undefined) {
+        const name =
+          typeof body.name === "string"
+            ? body.name.trim()
+            : "";
+
+        if (name.length < 2 || name.length > 60) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Category name must be between 2 and 60 characters.",
+          });
+        }
+
+        const duplicate = await db
+          .collection("categories")
+          .findOne({
+            _id: { $ne: category._id },
+            name: {
+              $regex: `^${escapeRegex(name)}$`,
+              $options: "i",
+            },
+          });
+
+        if (duplicate) {
+          return res.status(409).json({
+            success: false,
+            message: "That category already exists.",
+          });
+        }
+
+        update.name = name;
+        update.slug = toSlug(name);
+      }
+
+      if (body.description !== undefined) {
+        update.description =
+          typeof body.description === "string"
+            ? body.description.trim()
+            : "";
+      }
+
+      if (body.imageUrl !== undefined) {
+        update.imageUrl =
+          typeof body.imageUrl === "string"
+            ? body.imageUrl.trim()
+            : "";
+      }
+
+      if (Object.keys(update).length <= 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Nothing to update.",
+        });
+      }
+
+      await db
+        .collection("categories")
+        .updateOne(
+          { _id: category._id },
+          { $set: update }
+        );
+
+      const updated = await db
+        .collection("categories")
+        .findOne({ _id: category._id });
+
+      const statsMap = await getCategoryStats(db);
+
+      return res.status(200).json({
+        success: true,
+        message: "Category updated successfully.",
+        category: serializeCategory(updated, statsMap),
+      });
+    } catch (error) {
+      console.error(
+        "Update category error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to update category.",
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// DELETE /api/equipment/categories/:id
+// Admin only
+// --------------------------------------------------
+
+router.delete(
+  "/categories/:id",
+  verifyToken,
+  loadUser,
+  verifyRole("admin"),
+  async (req, res) => {
+    try {
+      const db = getDB();
+
+      if (!ObjectId.isValid(req.params.id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid category ID.",
+        });
+      }
+
+      const category = await db
+        .collection("categories")
+        .findOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+      if (!category) {
+        return res.status(404).json({
+          success: false,
+          message: "Category not found.",
+        });
+      }
+
+      const equipmentCount = await db
+        .collection("equipment")
+        .countDocuments({ category: category.name });
+
+      if (equipmentCount > 0) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "This category still has equipment. Reassign or remove those listings first.",
+        });
+      }
+
+      await db
+        .collection("categories")
+        .deleteOne({ _id: category._id });
+
+      return res.status(200).json({
+        success: true,
+        message: "Category deleted.",
+      });
+    } catch (error) {
+      console.error(
+        "Delete category error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to delete category.",
+      });
+    }
+  }
+);
+
 
 // --------------------------------------------------
 // GET /api/equipment
@@ -422,7 +901,11 @@ router.get("/", async (req, res) => {
 // PUBLIC
 // --------------------------------------------------
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req, res, next) => {
+  if (req.params.id === "manage") {
+    return next();
+  }
+
   try {
     if (
       !ObjectId.isValid(
@@ -623,6 +1106,22 @@ router.post(
           success: false,
           message:
             "Equipment name and category are required.",
+        });
+      }
+
+      const approvedCategories =
+        await getApprovedCategoryNames(db);
+
+      if (
+        !isApprovedCategory(
+          approvedCategories,
+          category
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Select an approved equipment category.",
         });
       }
 
@@ -844,6 +1343,28 @@ router.patch(
 
       const body =
         req.body || {};
+
+      if (
+        typeof body.category === "string" &&
+        body.category.trim() &&
+        body.category.trim() !== equipment.category
+      ) {
+        const approvedCategories =
+          await getApprovedCategoryNames(db);
+
+        if (
+          !isApprovedCategory(
+            approvedCategories,
+            body.category
+          )
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Select an approved equipment category.",
+          });
+        }
+      }
 
       const update = {
         updatedAt:
