@@ -47,12 +47,23 @@ export const loadUser = async (req, res, next) => {
         updatedAt: now,
       };
 
-      const result = await users.insertOne(newUser);
+      try {
+        const result = await users.insertOne(newUser);
 
-      user = {
-        _id: result.insertedId,
-        ...newUser,
-      };
+        user = {
+          _id: result.insertedId,
+          ...newUser,
+        };
+      } catch (error) {
+        if (error?.code !== 11000) {
+          throw error;
+        }
+
+        user = await users.findOne({ email });
+        if (!user) {
+          throw error;
+        }
+      }
     }
 
     req.dbUser = user;

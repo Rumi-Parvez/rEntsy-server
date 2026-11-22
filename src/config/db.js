@@ -1,16 +1,28 @@
 import { MongoClient } from "mongodb";
 
-const uri = process.env.MONGODB_CLIENT_URI;
-
-if (!uri) {
-  throw new Error("MONGODB_CLIENT_URI is not defined in .env");
-}
-
-const client = new MongoClient(uri, {
-  serverSelectionTimeoutMS: 8000,
-});
+const uri =
+  process.env.MONGODB_CLIENT_URI ||
+  process.env.MONGO_DB_CLIENT;
 
 let database;
+let connectionPromise;
+let client;
+
+const getClient = () => {
+  if (!uri) {
+    throw new Error(
+      "MONGODB_CLIENT_URI is not defined in the server environment."
+    );
+  }
+
+  if (!client) {
+    client = new MongoClient(uri, {
+      serverSelectionTimeoutMS: 8000,
+    });
+  }
+
+  return client;
+};
 
 const ensureIndexes = async (db) => {
   const jobs = [
@@ -86,20 +98,33 @@ const ensureIndexes = async (db) => {
 };
 
 export const connectDB = async () => {
-  try {
-    await client.connect();
-
-    database = client.db(process.env.DB_NAME);
-
-    await ensureIndexes(database);
-
-    console.log("MongoDB connected successfully");
-
+  if (database) {
     return database;
-  } catch (error) {
-    console.error("MongoDB connection failed:", error);
-    process.exit(1);
   }
+
+  if (!connectionPromise) {
+    connectionPromise = (async () => {
+      try {
+        const mongoClient = getClient();
+        await mongoClient.connect();
+
+        const connectedDatabase = mongoClient.db(
+          process.env.DB_NAME || "rEntsy_server_DB"
+        );
+
+        await ensureIndexes(connectedDatabase);
+        database = connectedDatabase;
+        console.log("MongoDB connected successfully");
+
+        return database;
+      } catch (error) {
+        connectionPromise = undefined;
+        throw error;
+      }
+    })();
+  }
+
+  return connectionPromise;
 };
 
 export const getDB = () => {

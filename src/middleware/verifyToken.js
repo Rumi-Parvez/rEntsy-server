@@ -1,12 +1,20 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
-const jwksUrl = process.env.BETTER_AUTH_JWKS_URL;
+let JWKS;
 
-if (!jwksUrl) {
-  throw new Error("BETTER_AUTH_JWKS_URL is not defined in .env");
-}
+const getJWKS = () => {
+  const jwksUrl = process.env.BETTER_AUTH_JWKS_URL;
 
-const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+  if (!jwksUrl) {
+    return null;
+  }
+
+  if (!JWKS) {
+    JWKS = createRemoteJWKSet(new URL(jwksUrl));
+  }
+
+  return JWKS;
+};
 
 // Better Auth signs tokens with the app base URL as both issuer and
 // audience. Allow explicit overrides for deployments that use a
@@ -51,7 +59,18 @@ export const verifyToken = async (req, res, next) => {
       });
     }
 
-    const { payload } = await jwtVerify(token, JWKS, {
+    const keySet = getJWKS();
+
+    if (!keySet) {
+      console.error("BETTER_AUTH_JWKS_URL is not configured.");
+
+      return res.status(500).json({
+        success: false,
+        message: "Authentication is not configured.",
+      });
+    }
+
+    const { payload } = await jwtVerify(token, keySet, {
       issuer: expectedIssuer,
       audience: expectedAudience,
       algorithms: ["EdDSA", "RS256", "ES256"],

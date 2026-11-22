@@ -25,16 +25,19 @@ const nodeEnvironment = (process.env.NODE_ENV || "development").toLowerCase();
 |--------------------------------------------------------------------------
 */
 
-const allowedOrigins = [
+const allowedOrigins = new Set([
   process.env.CLIENT_URL || "http://localhost:3000",
+  ...(process.env.CLIENT_URLS || "").split(","),
   "http://localhost:3000",
   "http://127.0.0.1:3000",
-];
+]
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
+  .filter(Boolean));
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.has(origin)) {
         return callback(null, true);
       }
 
@@ -46,6 +49,19 @@ app.use(
     maxAge: 600,
   })
 );
+
+app.use("/api", async (req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return next();
+  }
+
+  try {
+    await connectDB();
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
 
 app.disable("x-powered-by");
 
@@ -229,5 +245,8 @@ const startServer = async () => {
 };
 
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
 export default app;
