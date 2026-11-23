@@ -80,7 +80,7 @@ router.post(
   "/",
   verifyToken,
   loadUser,
-  verifyRole("customer", "owner", "admin"),
+  verifyRole("customer"),
   async (req, res) => {
     try {
       const db = getDB();
